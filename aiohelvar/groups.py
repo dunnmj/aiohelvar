@@ -21,7 +21,7 @@ class Group(Subscribable):
     def __init__(self, group_id: int, name=None):
         super(Group, self).__init__()
         self.group_id: int = group_id
-        self.name = None
+        self.name = name
         self.devices = []
         self.last_scene_address = None
 
@@ -71,7 +71,6 @@ class Groups:
         return False
 
     def register_subscription(self, group_id: int, func):
-
         group = self.groups.get(int(group_id))
 
         if group:
@@ -87,7 +86,6 @@ class Groups:
         [await group.update_subscribers() for group in self.groups.values()]
 
     async def handle_scene_callback(self, scene_address: SceneAddress, fade_time):
-
         if scene_address.group not in self.groups.keys():
             _LOGGER.info(
                 f"Scene {scene_address} not in any known group. Looking for {scene_address.group} in {self.groups.keys()}. Ignoring."
@@ -96,7 +94,9 @@ class Groups:
 
         group = self.groups.get(scene_address.group)
         if not group:
-            _LOGGER.error(f"Group {scene_address.group} not found for scene {scene_address}")
+            _LOGGER.error(
+                f"Group {scene_address.group} not found for scene {scene_address}"
+            )
             return
         group.last_scene_address = scene_address
 
@@ -139,7 +139,6 @@ class Groups:
 
 
 async def get_groups(router):
-
     response = await router._send_command_task(Command(CommandType.QUERY_GROUPS))
 
     # We expect a comma separated list of group ids.
@@ -219,6 +218,17 @@ async def get_groups(router):
 
     for group in groups:
         router.groups.register_group(group)
-        asyncio.create_task(update_name(router, group.group_id))
-        asyncio.create_task(update_group_devices(router, group.group_id))
-        asyncio.create_task(update_group_last_scene(router, group.group_id))
+
+    # Await all metadata tasks so that names, devices, and scenes are
+    # fully populated before callers create entities.
+    await asyncio.gather(
+        *[
+            task
+            for group in groups
+            for task in (
+                update_name(router, group.group_id),
+                update_group_devices(router, group.group_id),
+                update_group_last_scene(router, group.group_id),
+            )
+        ]
+    )

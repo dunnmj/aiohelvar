@@ -118,7 +118,6 @@ class Device(Subscribable):
         self.load_level = float(level)
 
     async def set_scene_level(self, scene_address: SceneAddress):
-
         if not self.is_load:
             return
 
@@ -148,7 +147,6 @@ class Device(Subscribable):
         await self.update_subscribers()
 
     def get_level_for_scene(self, scene_address: SceneAddress):
-
         if self.levels is None or not self.is_load:
             return None
 
@@ -256,7 +254,6 @@ class Devices:
         return [device for device in self.devices.values() if device.is_light is True]
 
     def update_device_scene_level(self, address, scene_levels):
-
         levels = scene_levels.split(",")
         if len(levels) != 136:
             raise ParserError(None, f"Expecting 136 scene levels, got {len(levels)}.")
@@ -264,8 +261,7 @@ class Devices:
         self.devices[address].set_scene_levels(levels)
 
     async def set_device_brightness(self, address, brightness: int, fade_time=100):
-
-        load_level = f"{((brightness/255)*100):.1f}"
+        load_level = f"{((brightness / 255) * 100):.1f}"
 
         await self.set_device_load_level(address, load_level, fade_time)
 
@@ -281,7 +277,9 @@ class Devices:
                     CommandType.DIRECT_LEVEL_DEVICE,
                     [
                         CommandParameter(CommandParameterType.LEVEL, load_level),
-                        CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                        CommandParameter(
+                            CommandParameterType.FADE_TIME, str(fade_time)
+                        ),
                     ],
                     command_address=address,
                 )
@@ -333,16 +331,16 @@ class Devices:
             )
             self.update_device_scene_level(device.address, response.result)
 
-        asyncio.create_task(update_name(device))
-        asyncio.create_task(update_state(device))
+        tasks = [update_name(device), update_state(device)]
 
         if device.is_load:
-            asyncio.create_task(update_load_level(device))
-            asyncio.create_task(update_scene_level(device))
+            tasks.append(update_load_level(device))
+            tasks.append(update_scene_level(device))
+
+        await asyncio.gather(*tasks)
 
 
 async def receive_and_register_devices(router, command):
-
     command = await router._send_command_task(command)
     if command.result is None:
         _LOGGER.info("No devices found.")
@@ -368,9 +366,8 @@ async def receive_and_register_devices(router, command):
 
 
 async def get_devices(router):
-
-    [
-        asyncio.create_task(
+    await asyncio.gather(
+        *[
             receive_and_register_devices(
                 router,
                 Command(
@@ -380,6 +377,6 @@ async def get_devices(router):
                     ),
                 ),
             )
-        )
-        for subnet_id in range(1, 5)
-    ]
+            for subnet_id in range(1, 5)
+        ]
+    )
