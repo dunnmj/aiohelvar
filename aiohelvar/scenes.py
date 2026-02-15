@@ -43,7 +43,6 @@ class Scenes:
         try:
             return self.scenes[scene_address]
         except KeyError:
-            
             _LOGGER.error(
                 f"Scene not found: {scene_address} (group={scene_address.group}, "
                 f"block={scene_address.block}, scene={scene_address.scene}). "
@@ -63,7 +62,6 @@ class Scenes:
             return default
 
     def get_scenes_for_group(self, group_id: int, only_named=True):
-
         _LOGGER.info(
             f"There are {len(self.scenes.values())} registered scenes. We are looking for scenes with group {group_id}."
         )
@@ -89,11 +87,10 @@ class Scenes:
 
 
 async def get_scenes(router, groups):
-
     response = await router._send_command_task(Command(CommandType.QUERY_SCENE_NAMES))
 
     for group in groups.groups.values():
-        for block in range(1, 254):
+        for block in range(1, 9):
             for scene in range(1, 17):
                 scene = Scene(SceneAddress(int(group.group_id), int(block), int(scene)))
                 router.scenes.register_scene(scene.address, scene)
@@ -106,7 +103,9 @@ async def get_scenes(router, groups):
     try:
         parts = response.result.strip("@").split("@")
     except AttributeError:
-        _LOGGER.error("Response result is not a string - cannot parse scene names, no scenes added.")
+        _LOGGER.error(
+            "Response result is not a string - cannot parse scene names, no scenes added."
+        )
         return
 
     for part in parts:
