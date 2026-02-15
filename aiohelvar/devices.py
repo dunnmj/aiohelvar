@@ -45,6 +45,7 @@ class Device(Subscribable):
         self.last_scene = None
         self.protocol = None
         self.type = None
+        self.device_type_id: int | None = None
         self.levels = []
 
         if raw_type:
@@ -102,6 +103,13 @@ class Device(Subscribable):
 
         else:
             return True
+
+    @property
+    def is_color(self):
+        """Return True if this is a DALI colour control device (type 8)."""
+        if self.device_type_id is not None:
+            return self.device_type_id == 8
+        return self.protocol == "DALI" and self.type == "Colour control"
 
     async def _set_level(self, level: float):
         if not self.is_load:
@@ -298,6 +306,60 @@ class Devices:
 
         asyncio.create_task(task(self, address, load_level))
 
+    async def set_device_colour_temperature(
+        self, address, colour_temp: int, fade_time=100
+    ):
+        """Set device colour temperature in mireds.
+
+        Sends command >V:1,C:13,L:<temp>,F:<fade>,@c.r.s.d#
+        """
+        _LOGGER.info(
+            "Setting device %s colour temperature to %s mireds over %sms",
+            address,
+            colour_temp,
+            fade_time,
+        )
+
+        await self.router._send_command_task(
+            Command(
+                CommandType.DIRECT_COLOUR_TEMPERATURE_DEVICE,
+                [
+                    CommandParameter(CommandParameterType.LEVEL, str(colour_temp)),
+                    CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                ],
+                command_address=address,
+            )
+        )
+
+    async def set_device_xy_color(self, address, x: float, y: float, fade_time=100):
+        """Set device CX/CY colour coordinates.
+
+        Helvar uses a proportion-based XY colour command. X and Y are
+        float values between 0.0 and 1.0 in the CIE 1931 colour space.
+        We scale them to the 0-65535 range used by the Helvar protocol.
+        """
+        _LOGGER.info(
+            "Setting device %s XY colour to (%.4f, %.4f) over %sms",
+            address,
+            x,
+            y,
+            fade_time,
+        )
+
+        cx = int(x * 65535)
+        cy = int(y * 65535)
+
+        await self.router._send_command_task(
+            Command(
+                CommandType.DIRECT_COLOUR_TEMPERATURE_DEVICE,
+                [
+                    CommandParameter(CommandParameterType.LEVEL, f"{cx},{cy}"),
+                    CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                ],
+                command_address=address,
+            )
+        )
+
     async def update_device(self, address):
         # Update name, state and load.
 
@@ -331,7 +393,21 @@ class Devices:
             )
             self.update_device_scene_level(device.address, response.result)
 
-        tasks = [update_name(device), update_state(device)]
+        async def update_device_type(device):
+            response = await self.router._send_command_task(
+                Command(CommandType.QUERY_DEVICE_TYPE, command_address=device.address)
+            )
+            if response and response.result is not None:
+                try:
+                    device.device_type_id = int(response.result)
+                except (ValueError, TypeError):
+                    _LOGGER.warning(
+                        "Could not parse device type for %s: %s",
+                        device.address,
+                        response.result,
+                    )
+
+        tasks = [update_name(device), update_state(device), update_device_type(device)]
 
         if device.is_load:
             tasks.append(update_load_level(device))

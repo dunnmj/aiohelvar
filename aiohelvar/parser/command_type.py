@@ -2,12 +2,12 @@ from enum import Enum
 
 
 class CommandType(Enum):
-
     # Queries
     QUERY_CLUSTERS = (101, "Query Clusters.")
     QUERY_GROUP_DESCRIPTION = (105, "Query group description.")
     QUERY_DEVICE_DESCRIPTION = (106, "Query device description.")
     QUERY_DEVICE_TYPES_AND_ADDRESSES = (100, "Query Device Types and Addresses")
+    QUERY_DEVICE_TYPE = (104, "Query device type.")
     QUERY_DEVICE_STATE = (110, "Query Device State")
     QUERY_WORKGROUP_NAME = (107, "Query Workgroup Name")
     QUERY_DEVICE_LOAD_LEVEL = (152, "Query Device Load Level")
@@ -24,6 +24,10 @@ class CommandType(Enum):
 
     # Commands
     DIRECT_LEVEL_DEVICE = (14, "Direct Level, Device")
+    DIRECT_COLOUR_TEMPERATURE_DEVICE = (
+        13,
+        "Direct Colour Temperature, Device",
+    )
     RECALL_SCENE = (11, "Recall Scene")
 
     def __init__(self, command_id, description):
@@ -48,7 +52,6 @@ COMMAND_TYPES_DONT_LISTEN_FOR_RESPONSE = [
 
 
 class MessageType(Enum):
-
     COMMAND = ">"
     INTERNAL_COMMAND = "<"
     REPLY = "?"
