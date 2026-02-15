@@ -90,9 +90,11 @@ async def get_scenes(router, groups):
     response = await router._send_command_task(Command(CommandType.QUERY_SCENE_NAMES))
 
     for group in groups.groups.values():
-        for block in range(1, 9):
-            for scene in range(1, 17):
-                scene = Scene(SceneAddress(int(group.group_id), int(block), int(scene)))
+        for block in range(1, 9):  # Helvar supports blocks 1-8
+            for scene_num in range(1, 17):
+                scene = Scene(
+                    SceneAddress(int(group.group_id), int(block), int(scene_num))
+                )
                 router.scenes.register_scene(scene.address, scene)
 
     # Check if response.result is None or empty

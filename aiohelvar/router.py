@@ -1,5 +1,5 @@
 from aiohelvar.parser.command_parameter import CommandParameterType
-from .devices import Devices, get_devices, receive_and_register_devices
+from .devices import Device, Devices, get_devices, receive_and_register_devices
 from .groups import Groups, get_groups
 from .scenes import Scenes, get_scenes
 from .parser.parser import CommandParser
@@ -11,6 +11,7 @@ from .parser.command_type import (
 from .parser.command import Command
 from .parser.address import HelvarAddress
 from .exceptions import CommandResponseTimeout, ParserError
+from copy import copy
 import asyncio
 import datetime
 import logging
@@ -94,7 +95,7 @@ class Router:
         if self.config is not None:
             return self.config.routerid
 
-        return self._router_id
+        return self.router_id
 
     async def connect(self):
         _LOGGER.debug("Connecting...")
@@ -225,37 +226,104 @@ class Router:
                 return
             await asyncio.sleep(0.1)
 
-    async def initialize(self, discover_cluster=False):
-        # Attempt Connection
-        if not self.connected:
-            await self.connect()
+    async def initialize(
+        self,
+        discover_cluster: bool = False,
+        lights_only: bool = False,
+    ) -> None:
+        """Initialize the router.
 
-        # Get Groups
-        await self.get_groups()
+        Args:
+            discover_cluster: Query peer routers for device names.
+            lights_only: Only discover devices, skip groups and scenes.
+        """
+        if lights_only:
+            # Only query devices — no groups, scenes, or scene levels
+            await self._get_devices_minimal()
+        else:
+            await get_groups(self)
+            await get_devices(self)
+            await get_scenes(self, self.groups)
 
-        # Get Devices — either from the whole cluster or just this router
         if discover_cluster:
             await self.discover_devices_from_cluster()
-        else:
-            await self.get_devices()
 
-        # Get Clusters
-        # await self.get_clusters()
+    async def _get_devices_minimal(self) -> None:
+        """Query devices with only name and type — no state, levels, or scenes."""
+        for subnet in range(1, 5):
+            base_address = HelvarAddress(
+                self.cluster_id, self.router_id, subnet,
+            )
+            try:
+                response = await self._send_command_task(
+                    Command(
+                        CommandType.QUERY_DEVICE_TYPES_AND_ADDRESSES,
+                        command_address=base_address,
+                    )
+                )
+            except Exception:
+                _LOGGER.debug("No devices found on subnet %s", subnet)
+                continue
 
-        # Get Scenes
-        await self.get_scenes()
+            if not response or not response.result:
+                continue
 
-        # Update group scenes
-        await self.groups.force_update_groups()
+            if "@" not in response.result:
+                _LOGGER.debug(
+                    "Not able to split, '%s' does not contain @",
+                    response.result,
+                )
+                continue
 
-    async def get_groups(self):
-        await get_groups(self)
+            device_pairs = response.result.split(",")
+            tasks = []
+            for pair in device_pairs:
+                parts = pair.split("@")
+                if len(parts) != 2:
+                    continue
+                device_type = parts[0]
+                # Build address from the base, setting the device octet
+                address = copy(base_address)
+                address.device = parts[1]
+                device = Device(address, raw_type=device_type)
+                self.devices.register_device(device)
+                # Only query name and DALI device type
+                tasks.append(self._update_device_name(device))
+                tasks.append(self._update_device_type(device))
 
-    async def get_devices(self):
-        await get_devices(self)
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def get_scenes(self):
-        await get_scenes(self, self.groups)
+    async def _update_device_name(self, device: Device) -> None:
+        """Query only the device name."""
+        try:
+            response = await self._send_command_task(
+                Command(
+                    CommandType.QUERY_DEVICE_DESCRIPTION,
+                    command_address=device.address,
+                )
+            )
+        except Exception:
+            _LOGGER.debug("Failed to query name for %s", device.address)
+            return
+
+        if response and response.result:
+            device.name = response.result
+
+    async def _update_device_type(self, device: Device) -> None:
+        """Query only the DALI device type."""
+        try:
+            response = await self._send_command_task(
+                Command(
+                    CommandType.QUERY_DEVICE_TYPE,
+                    command_address=device.address,
+                )
+            )
+        except Exception:
+            _LOGGER.debug("Failed to query type for %s", device.address)
+            return
+
+        if response and response.result:
+            device.device_type_id = int(response.result)
 
     async def query_cluster_routers_addresses(self):
         """Query the cluster for all router addresses.
@@ -278,71 +346,49 @@ class Router:
         _LOGGER.info("Discovered %d routers in the cluster", len(routers))
         return routers
 
-    async def discover_devices_from_cluster(self):
-        """Connect to each router in the cluster to discover devices with names.
-
-        Each router can only return names for devices it directly controls.
-        We connect to every router in the cluster, query their devices (with
-        names), and register them all on this router's Devices store so that
-        entities can be created from a single source of truth.
-        """
+    async def discover_devices_from_cluster(self) -> None:
+        """Discover devices from all routers in the cluster."""
         cluster_routers = await self.query_cluster_routers_addresses()
 
-        if not cluster_routers:
-            _LOGGER.info("No cluster routers found, using local devices only")
-            await self.get_devices()
-            return
+        ip_prefix = ".".join(self.host.split(".")[:2])
 
         for router_ip in cluster_routers:
-            if router_ip == self.host:
-                # This is us — query devices directly
-                _LOGGER.debug("Querying devices from local router %s", router_ip)
-                await self.get_devices()
+            # Build the full peer IP from the cluster address
+            # router_ip is like "cluster.router" from the @c.r response
+            peer_ip = f"{ip_prefix}.{router_ip}"
+
+            if peer_ip == self.host:
+                # Local router — devices already loaded
                 continue
 
-            _LOGGER.info(
-                "Connecting to cluster router %s to discover devices",
-                router_ip,
-            )
-
-            peer = Router(router_ip, self.port)
+            _LOGGER.debug("Querying peer router at %s for device names", peer_ip)
 
             try:
+                peer = Router(peer_ip, self.port)
                 await peer.connect()
-                await peer.get_devices()
-            except (ConnectionError, CommandResponseTimeout, OSError) as err:
+            except (ConnectionError, asyncio.TimeoutError):
                 _LOGGER.warning(
-                    "Could not connect to cluster router %s: %s",
-                    router_ip,
-                    err,
+                    "Could not connect to peer router at %s", peer_ip
                 )
                 continue
-            finally:
-                if peer.connected:
-                    try:
-                        await peer.disconnect()
-                    except Exception:  # noqa: BLE001
-                        _LOGGER.debug("Error disconnecting from peer %s", router_ip)
 
-            # Merge discovered devices into our device store
-            for address, device in peer.devices.devices.items():
-                if address not in self.devices.devices:
-                    self.devices.register_device(device)
-                    _LOGGER.debug(
-                        "Registered device %s (%s) from router %s",
-                        address,
-                        device.name,
-                        router_ip,
-                    )
-                elif device.name and not self.devices.devices[address].name:
-                    # Peer had the name, we didn't
-                    self.devices.devices[address].name = device.name
-                    _LOGGER.debug(
-                        "Updated name for device %s to '%s' from router %s",
-                        address,
-                        device.name,
-                        router_ip,
-                    )
+            try:
+                # Discover devices on the peer router (minimal — names and types only)
+                await peer._get_devices_minimal()
+
+                # Merge peer devices into local device store
+                for device in peer.devices.devices.values():
+                    if device.address in self.devices.devices:
+                        if device.name and not self.devices.devices[device.address].name:
+                            self.devices.devices[device.address].name = device.name
+                    else:
+                        self.devices.register_device(device)
+            except Exception:
+                _LOGGER.debug(
+                    "Failed to query devices from peer %s", peer_ip
+                )
+            finally:
+                await peer.disconnect()
 
     # async def get_clusters(self):
     #     response = await self.send_command(Command(CommandType.QUERY_ROUTERS))
