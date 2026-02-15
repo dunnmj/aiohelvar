@@ -21,6 +21,10 @@ class CommandParameterType(Enum):
     DAYLIGHT_SAVING_TIME = "Y"
     CONSTANT_LIGHT_SCENE = "K"
     FORCE_STORE_SCENE = "O"
+    MIREDS = "M"
+    COLOUR_X = "CX"
+    COLOUR_Y = "CY"
+    COLOUR_IGNORE = "CI"
 
     def __str__(self):
         return self.value

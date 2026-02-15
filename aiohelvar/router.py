@@ -235,11 +235,13 @@ class Router:
 
         Args:
             discover_cluster: Query peer routers for device names.
-            lights_only: Only discover devices, skip groups and scenes.
+            lights_only: Only discover devices and groups (minimal),
+                         skip full group metadata and scenes.
         """
         if lights_only:
-            # Only query devices — no groups, scenes, or scene levels
+            # Query devices and groups minimally — no scenes or scene levels
             await self._get_devices_minimal()
+            await self._get_groups_minimal()
         else:
             await get_groups(self)
             await get_devices(self)
@@ -325,6 +327,83 @@ class Router:
         if response and response.result:
             device.device_type_id = int(response.result)
 
+    async def _get_groups_minimal(self) -> None:
+        """Query groups with only name and members — no scenes or last scene.
+
+        Sends QUERY_GROUPS (165) to get group IDs, then gathers
+        QUERY_GROUP_DESCRIPTION (105) and QUERY_GROUP (164) per group.
+        """
+        from .groups import Group
+
+        try:
+            response = await self._send_command_task(
+                Command(CommandType.QUERY_GROUPS)
+            )
+        except Exception:
+            _LOGGER.debug("Failed to query groups")
+            return
+
+        if not response or not response.result:
+            _LOGGER.debug("No groups returned from QUERY_GROUPS")
+            return
+
+        # Parse comma-separated group IDs
+        group_ids = []
+        for gid in response.result.split(","):
+            gid = gid.strip()
+            if gid:
+                try:
+                    int(gid)
+                    group_ids.append(gid)
+                except ValueError:
+                    _LOGGER.warning("Invalid group ID: %s", gid)
+
+        # Register groups
+        for gid in group_ids:
+            self.groups.register_group(Group(gid))
+
+        # Query name and members for each group in parallel
+        async def update_name(group_id):
+            try:
+                resp = await self._send_command_task(
+                    Command(
+                        CommandType.QUERY_GROUP_DESCRIPTION,
+                        [CommandParameter(CommandParameterType.GROUP, group_id)],
+                    )
+                )
+            except Exception:
+                _LOGGER.debug("Failed to query name for group %s", group_id)
+                return
+            if resp and resp.result:
+                self.groups.update_group_name(group_id, resp.result)
+
+        async def update_members(group_id):
+            try:
+                resp = await self._send_command_task(
+                    Command(
+                        CommandType.QUERY_GROUP,
+                        [CommandParameter(CommandParameterType.GROUP, group_id)],
+                    )
+                )
+            except Exception:
+                _LOGGER.debug("Failed to query members for group %s", group_id)
+                return
+            if resp and resp.result:
+                members = [m.strip("@") for m in resp.result.split(",")]
+                addresses = [
+                    HelvarAddress(*m.split(".")) for m in members
+                ]
+                self.groups.update_group_device_members(group_id, addresses)
+
+        await asyncio.gather(
+            *[
+                task
+                for gid in group_ids
+                for task in (update_name(gid), update_members(gid))
+            ],
+            return_exceptions=True,
+        )
+
     async def query_cluster_routers_addresses(self):
         """Query the cluster for all router addresses.
 
@@ -350,12 +429,9 @@ class Router:
         """Discover devices from all routers in the cluster."""
         cluster_routers = await self.query_cluster_routers_addresses()
 
-        ip_prefix = ".".join(self.host.split(".")[:2])
-
-        for router_ip in cluster_routers:
-            # Build the full peer IP from the cluster address
-            # router_ip is like "cluster.router" from the @c.r response
-            peer_ip = f"{ip_prefix}.{router_ip}"
+        for peer_ip in cluster_routers:
+            # query_cluster_routers_addresses returns full IPs
+            # (e.g. "10.86.110.2") stripped of the leading @
 
             if peer_ip == self.host:
                 # Local router — devices already loaded

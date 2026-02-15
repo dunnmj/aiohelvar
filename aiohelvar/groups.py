@@ -39,13 +39,6 @@ class Group(Subscribable):
 
     def get_levels_for_scene(self, scene_address):
         pass
-        # TODO
-        # levels = {}
-
-        # for device in self.devices:
-        #     levels[device.address] = device.level_for_scene(scene_address)
-
-        # return levels
 
 
 class Groups:
@@ -82,8 +75,9 @@ class Groups:
         return self.router.scenes.get_scenes_for_group(group_id, only_named)
 
     async def force_update_groups(self):
-        """Force subscription updates for all groups"""
-        [await group.update_subscribers() for group in self.groups.values()]
+        """Force subscription updates for all groups."""
+        for group in self.groups.values():
+            await group.update_subscribers()
 
     async def handle_scene_callback(self, scene_address: SceneAddress, fade_time):
         if scene_address.group not in self.groups.keys():
@@ -116,15 +110,35 @@ class Groups:
 
         _LOGGER.info(f"Updated devices in scene {scene_address}.")
 
+    async def handle_direct_level_group_callback(self, group_id: int, level: float):
+        """Handle a Direct Level Group (command 13) echo.
+
+        Updates member device load levels and notifies group subscribers
+        so individual HelvarLight entities stay in sync.
+        """
+        group = self.groups.get(int(group_id))
+        if not group:
+            _LOGGER.debug(
+                "Received direct level for unknown group %s, ignoring", group_id
+            )
+            return
+
+        _LOGGER.info("Updating devices in group %s to level %s", group.name, level)
+        for device_address in group.devices:
+            device = self.router.devices.devices.get(device_address)
+            if device is None:
+                continue
+            await device._set_level(level)
+            await device.update_subscribers()
+
+        await group.update_subscribers()
+
     async def set_scene(self, scene_address: SceneAddress, fade_time=DEFAULT_FADE_TIME):
+        """Set the scene with the router.
+
+        We'll get a scene change callback from the router that we'll use to
+        update device state, so no need to call one here.
         """
-        Set the scene with the router.
-
-        We'll get a scene change callback from the router that well use to update device state,
-        so no need to call one here.
-
-        """
-
         await self.router.send_command(
             Command(
                 CommandType.RECALL_SCENE,
@@ -136,6 +150,111 @@ class Groups:
                 ],
             )
         )
+
+    async def set_group_level(self, group_id: int, level: str, fade_time=100):
+        """Set the load level for all devices in a group.
+
+        Uses Direct Level Group (command 13):
+        >V:1,C:13,G:<group>,L:<level>,F:<fade>#
+
+        Args:
+            group_id: The Helvar group ID.
+            level: Load level 0-100 as a string.
+            fade_time: Fade time in centiseconds (100 = 1 second).
+        """
+        _LOGGER.info(
+            "Setting group %s level to %s over %s cs", group_id, level, fade_time
+        )
+
+        await self.router._send_command_task(
+            Command(
+                CommandType.DIRECT_LEVEL_GROUP,
+                [
+                    CommandParameter(CommandParameterType.GROUP, str(group_id)),
+                    CommandParameter(CommandParameterType.LEVEL, level),
+                    CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                ],
+            )
+        )
+
+        # Update member devices immediately so state is reflected
+        await self.handle_direct_level_group_callback(group_id, float(level))
+
+    async def set_group_colour_temperature(
+        self, group_id: int, level: str, colour_temp: int, fade_time=100
+    ):
+        """Set the colour temperature for all devices in a group.
+
+        Uses Direct Level Group (command 13) with M: (mireds) parameter:
+        >V:1,C:13,G:<group>,L:<level>,F:<fade>,M:<mireds>#
+
+        Args:
+            group_id: The Helvar group ID.
+            level: Load level 0-100 as a string.
+            colour_temp: Colour temperature in mireds.
+            fade_time: Fade time in centiseconds (100 = 1 second).
+        """
+        _LOGGER.info(
+            "Setting group %s colour temperature to %s mireds at level %s",
+            group_id,
+            colour_temp,
+            level,
+        )
+
+        await self.router._send_command_task(
+            Command(
+                CommandType.DIRECT_LEVEL_GROUP,
+                [
+                    CommandParameter(CommandParameterType.GROUP, str(group_id)),
+                    CommandParameter(CommandParameterType.LEVEL, level),
+                    CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                    CommandParameter(CommandParameterType.MIREDS, str(colour_temp)),
+                ],
+            )
+        )
+
+        await self.handle_direct_level_group_callback(group_id, float(level))
+
+    async def set_group_xy_color(
+        self, group_id: int, level: str, x: float, y: float, fade_time=100
+    ):
+        """Set the CX/CY colour for all devices in a group.
+
+        Uses Direct Level Group (command 13) with CX: and CY: parameters:
+        >V:1,C:13,G:<group>,L:<level>,F:<fade>,CX:<cx>,CY:<cy>#
+
+        Args:
+            group_id: The Helvar group ID.
+            level: Load level 0-100 as a string.
+            x: CIE x coordinate (0.0-1.0).
+            y: CIE y coordinate (0.0-1.0).
+            fade_time: Fade time in centiseconds (100 = 1 second).
+        """
+        cx = int(x * 65535)
+        cy = int(y * 65535)
+
+        _LOGGER.info(
+            "Setting group %s XY colour to (%s, %s) at level %s",
+            group_id,
+            cx,
+            cy,
+            level,
+        )
+
+        await self.router._send_command_task(
+            Command(
+                CommandType.DIRECT_LEVEL_GROUP,
+                [
+                    CommandParameter(CommandParameterType.GROUP, str(group_id)),
+                    CommandParameter(CommandParameterType.LEVEL, level),
+                    CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                    CommandParameter(CommandParameterType.COLOUR_X, str(cx)),
+                    CommandParameter(CommandParameterType.COLOUR_Y, str(cy)),
+                ],
+            )
+        )
+
+        await self.handle_direct_level_group_callback(group_id, float(level))
 
 
 async def get_groups(router):

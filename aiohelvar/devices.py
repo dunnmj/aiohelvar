@@ -307,43 +307,70 @@ class Devices:
         asyncio.create_task(task(self, address, load_level))
 
     async def set_device_colour_temperature(
-        self, address, colour_temp: int, fade_time=100
+        self, address, colour_temp: int, level: str | None = None, fade_time=100
     ):
         """Set device colour temperature in mireds.
 
-        Sends command >V:1,C:13,L:<temp>,F:<fade>,@c.r.s.d#
+        Uses Direct Level Device (command 14) with optional M: (mireds)
+        parameter: >V:1,C:14,L:<level>,F:<fade>,M:<mireds>,@c.r.s.d#
+
+        Args:
+            address: The device HelvarAddress.
+            colour_temp: Colour temperature in mireds.
+            level: Load level 0-100 as string. If None, uses current level.
+            fade_time: Fade time in centiseconds (100 = 1 second).
         """
+        if level is None:
+            device = self.devices.get(address)
+            level = f"{device.load_level:.1f}" if device else "100.0"
+
         _LOGGER.info(
-            "Setting device %s colour temperature to %s mireds over %sms",
+            "Setting device %s colour temperature to %s mireds at level %s",
             address,
             colour_temp,
-            fade_time,
+            level,
         )
 
         await self.router._send_command_task(
             Command(
-                CommandType.DIRECT_COLOUR_TEMPERATURE_DEVICE,
+                CommandType.DIRECT_LEVEL_DEVICE,
                 [
-                    CommandParameter(CommandParameterType.LEVEL, str(colour_temp)),
+                    CommandParameter(CommandParameterType.LEVEL, level),
                     CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                    CommandParameter(CommandParameterType.MIREDS, str(colour_temp)),
                 ],
                 command_address=address,
             )
         )
 
-    async def set_device_xy_color(self, address, x: float, y: float, fade_time=100):
+    async def set_device_xy_color(
+        self, address, x: float, y: float, level: str | None = None, fade_time=100
+    ):
         """Set device CX/CY colour coordinates.
 
-        Helvar uses a proportion-based XY colour command. X and Y are
-        float values between 0.0 and 1.0 in the CIE 1931 colour space.
-        We scale them to the 0-65535 range used by the Helvar protocol.
+        Uses Direct Level Device (command 14) with CX: and CY: parameters:
+        >V:1,C:14,L:<level>,F:<fade>,CX:<cx>,CY:<cy>,@c.r.s.d#
+
+        X and Y are float values between 0.0 and 1.0 in the CIE 1931 colour
+        space. We scale them to the 0-65535 range used by the Helvar protocol.
+
+        Args:
+            address: The device HelvarAddress.
+            x: CIE x coordinate (0.0-1.0).
+            y: CIE y coordinate (0.0-1.0).
+            level: Load level 0-100 as string. If None, uses current level.
+            fade_time: Fade time in centiseconds (100 = 1 second).
         """
+        if level is None:
+            device = self.devices.get(address)
+            level = f"{device.load_level:.1f}" if device else "100.0"
+
         _LOGGER.info(
-            "Setting device %s XY colour to (%.4f, %.4f) over %sms",
+            "Setting device %s XY colour to (%.4f, %.4f) at level %s",
             address,
             x,
             y,
-            fade_time,
+            level,
         )
 
         cx = int(x * 65535)
@@ -351,10 +378,12 @@ class Devices:
 
         await self.router._send_command_task(
             Command(
-                CommandType.DIRECT_COLOUR_TEMPERATURE_DEVICE,
+                CommandType.DIRECT_LEVEL_DEVICE,
                 [
-                    CommandParameter(CommandParameterType.LEVEL, f"{cx},{cy}"),
+                    CommandParameter(CommandParameterType.LEVEL, level),
                     CommandParameter(CommandParameterType.FADE_TIME, str(fade_time)),
+                    CommandParameter(CommandParameterType.COLOUR_X, str(cx)),
+                    CommandParameter(CommandParameterType.COLOUR_Y, str(cy)),
                 ],
                 command_address=address,
             )
