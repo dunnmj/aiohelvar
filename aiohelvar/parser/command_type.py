@@ -18,6 +18,7 @@ class CommandType(Enum):
     QUERY_GROUP = (164, "Query devices in group.")
     QUERY_GROUPS = (165, "Query all groups.")
     QUERY_SCENE_NAMES = (166, "Query all scene names in group.")
+    QUERY_ROUTERS = (108, "Query all routers in the cluster.")
     QUERY_ROUTER_VERSION = (190, "Query the router software version.")
     QUERY_HELVARNET_VERSION = (191, "Query the HelvarNet software version.")
 

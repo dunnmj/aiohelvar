@@ -1,5 +1,5 @@
 from aiohelvar.parser.command_parameter import CommandParameterType
-from .devices import Devices, get_devices
+from .devices import Devices, get_devices, receive_and_register_devices
 from .groups import Groups, get_groups
 from .scenes import Scenes, get_scenes
 from .parser.parser import CommandParser
@@ -9,6 +9,7 @@ from .parser.command_type import (
     MessageType,
 )
 from .parser.command import Command
+from .parser.address import HelvarAddress
 from .exceptions import CommandResponseTimeout, ParserError
 import asyncio
 import datetime
@@ -33,11 +34,13 @@ class Router:
     def __init__(self, host, port, cluster_id=0, router_id=1, use_specified_ids=False):
         self.host = host
         self.port = port
-        
+
         # Check if we should use specified IDs or extract from IP address
         if use_specified_ids:
             # Use the provided cluster_id and router_id values
-            _LOGGER.debug(f"Using specified IDs: cluster_id={cluster_id}, router_id={router_id}")
+            _LOGGER.debug(
+                f"Using specified IDs: cluster_id={cluster_id}, router_id={router_id}"
+            )
             self.cluster_id = cluster_id
             self.router_id = router_id
         else:
@@ -45,18 +48,24 @@ class Router:
             try:
                 ip = ipaddress.ip_address(host)
                 if isinstance(ip, ipaddress.IPv4Address):
-                    octets = str(ip).split('.')
+                    octets = str(ip).split(".")
                     self.cluster_id = int(octets[2])  # 3rd octet
-                    self.router_id = int(octets[3])   # 4th octet
-                    _LOGGER.debug(f"Extracted IDs from IPv4 address {host}: cluster_id={self.cluster_id}, router_id={self.router_id}")
+                    self.router_id = int(octets[3])  # 4th octet
+                    _LOGGER.debug(
+                        f"Extracted IDs from IPv4 address {host}: cluster_id={self.cluster_id}, router_id={self.router_id}"
+                    )
                 else:
                     # For IPv6 or if we can't parse octets, use provided values
-                    _LOGGER.debug(f"IPv6 address {host} detected, using provided values: cluster_id={cluster_id}, router_id={router_id}")
+                    _LOGGER.debug(
+                        f"IPv6 address {host} detected, using provided values: cluster_id={cluster_id}, router_id={router_id}"
+                    )
                     self.cluster_id = cluster_id
                     self.router_id = router_id
             except ValueError:
                 # Not a valid IP address, use provided values
-                _LOGGER.debug(f"Invalid IP address '{host}', using provided values: cluster_id={cluster_id}, router_id={router_id}")
+                _LOGGER.debug(
+                    f"Invalid IP address '{host}', using provided values: cluster_id={cluster_id}, router_id={router_id}"
+                )
                 self.cluster_id = cluster_id
                 self.router_id = router_id
 
@@ -91,12 +100,18 @@ class Router:
         _LOGGER.debug("Connecting...")
 
         try:
-            self._reader, self._writer = await asyncio.open_connection(
-                self.host, self.port
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port), timeout=10
             )
         except ConnectionError as e:
             _LOGGER.error(
                 f"Connection error while connecting to router {self.host}:{self.port} - ",
+                e,
+            )
+            raise
+        except asyncio.TimeoutError as e:
+            _LOGGER.error(
+                f"Timeout while connecting to router {self.host}:{self.port} - ",
                 e,
             )
             raise
@@ -142,7 +157,6 @@ class Router:
         """Keep the TCP connection alive. This'll also clean up any stale command futures."""
 
         def _keep_alive_callback(task):
-
             if task.exception():
                 _LOGGER.warn(
                     f"Keep alive encountered an exception: {task.exception()}."
@@ -169,7 +183,6 @@ class Router:
         while True:
             line = await reader.readuntil(COMMAND_TERMINATOR)
             if line is not None:
-
                 _LOGGER.debug(f"Received line: {line}")
 
                 lines = line.split(b"$")
@@ -197,7 +210,6 @@ class Router:
                         self.command_received.release()
 
     async def _stream_writer(self, reader, writer):
-
         while True:
             command_string = await self.commands_to_send.get()
             _LOGGER.info(f"Sending command '{command_string}'...")
@@ -213,8 +225,7 @@ class Router:
                 return
             await asyncio.sleep(0.1)
 
-    async def initialize(self):
-
+    async def initialize(self, discover_cluster=False):
         # Attempt Connection
         if not self.connected:
             await self.connect()
@@ -222,8 +233,11 @@ class Router:
         # Get Groups
         await self.get_groups()
 
-        # Get Devices
-        await self.get_devices()
+        # Get Devices — either from the whole cluster or just this router
+        if discover_cluster:
+            await self.discover_devices_from_cluster()
+        else:
+            await self.get_devices()
 
         # Get Clusters
         # await self.get_clusters()
@@ -235,16 +249,100 @@ class Router:
         await self.groups.force_update_groups()
 
     async def get_groups(self):
-
         await get_groups(self)
 
     async def get_devices(self):
-
         await get_devices(self)
 
     async def get_scenes(self):
-
         await get_scenes(self, self.groups)
+
+    async def query_cluster_routers_addresses(self):
+        """Query the cluster for all router addresses.
+
+        Sends command >V:2,C:108# and parses the comma-separated list of
+        @cluster.router addresses. Returns a list of (cluster_id, router_id)
+        tuples for all routers in the cluster.
+        """
+        response = await self._send_command_task(Command(CommandType.QUERY_ROUTERS))
+
+        if not response or not response.result:
+            _LOGGER.debug("No routers returned from QUERY_ROUTERS")
+            return []
+
+        routers = []
+        for entry in response.result.split(","):
+            ip = entry.strip().lstrip("@")
+            routers.append(ip)
+
+        _LOGGER.info("Discovered %d routers in the cluster", len(routers))
+        return routers
+
+    async def discover_devices_from_cluster(self):
+        """Connect to each router in the cluster to discover devices with names.
+
+        Each router can only return names for devices it directly controls.
+        We connect to every router in the cluster, query their devices (with
+        names), and register them all on this router's Devices store so that
+        entities can be created from a single source of truth.
+        """
+        cluster_routers = await self.query_cluster_routers_addresses()
+
+        if not cluster_routers:
+            _LOGGER.info("No cluster routers found, using local devices only")
+            await self.get_devices()
+            return
+
+        for router_ip in cluster_routers:
+            if router_ip == self.host:
+                # This is us — query devices directly
+                _LOGGER.debug("Querying devices from local router %s", router_ip)
+                await self.get_devices()
+                continue
+
+            _LOGGER.info(
+                "Connecting to cluster router %s to discover devices",
+                router_ip,
+            )
+
+            peer = Router(router_ip, self.port)
+
+            try:
+                await peer.connect()
+                await peer.get_devices()
+            except (ConnectionError, CommandResponseTimeout, OSError) as err:
+                _LOGGER.warning(
+                    "Could not connect to cluster router %s: %s",
+                    router_ip,
+                    err,
+                )
+                continue
+            finally:
+                if peer.connected:
+                    try:
+                        await peer.disconnect()
+                    except Exception:  # noqa: BLE001
+                        _LOGGER.debug("Error disconnecting from peer %s", router_ip)
+
+            # Merge discovered devices into our device store
+            for address, device in peer.devices.devices.items():
+                if address not in self.devices.devices:
+                    self.devices.register_device(device)
+                    _LOGGER.debug(
+                        "Registered device %s (%s) from router %s",
+                        address,
+                        device.name,
+                        router_ip,
+                    )
+                elif device.name and not self.devices.devices[address].name:
+                    # Peer had the name, we didn't
+                    self.devices.devices[address].name = device.name
+                    _LOGGER.debug(
+                        "Updated name for device %s to '%s' from router %s",
+                        address,
+                        device.name,
+                        router_ip,
+                    )
 
     # async def get_clusters(self):
     #     response = await self.send_command(Command(CommandType.QUERY_ROUTERS))
@@ -254,7 +352,6 @@ class Router:
     #     print(response.result())
 
     async def _send_command_task(self, command: Command):
-
         start_time = datetime.datetime.now()
 
         await self.send_string(str(command))
@@ -289,7 +386,6 @@ class Router:
 
         async with self.command_received:
             while response is None:
-
                 if datetime.datetime.now() > (
                     start_time + datetime.timedelta(0, COMMAND_RESPONSE_TIMEOUT)
                 ):
