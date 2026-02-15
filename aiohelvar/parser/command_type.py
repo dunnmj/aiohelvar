@@ -48,6 +48,7 @@ class CommandType(Enum):
 COMMAND_TYPES_DONT_LISTEN_FOR_RESPONSE = [
     CommandType.RECALL_SCENE,
     CommandType.DIRECT_LEVEL_DEVICE,
+    CommandType.DIRECT_COLOUR_TEMPERATURE_DEVICE,
 ]
 
 

@@ -329,8 +329,8 @@ class Router:
         """Query the cluster for all router addresses.
 
         Sends command >V:2,C:108# and parses the comma-separated list of
-        @cluster.router addresses. Returns a list of (cluster_id, router_id)
-        tuples for all routers in the cluster.
+        @cluster.router addresses. Returns a list of "cluster.router" strings
+        for all routers in the cluster (e.g. ["110.1", "110.2", ...]).
         """
         response = await self._send_command_task(Command(CommandType.QUERY_ROUTERS))
 
