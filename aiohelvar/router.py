@@ -1,4 +1,4 @@
-from aiohelvar.parser.command_parameter import CommandParameterType
+from aiohelvar.parser.command_parameter import CommandParameter, CommandParameterType
 from .devices import Device, Devices, get_devices, receive_and_register_devices
 from .groups import Groups, get_groups
 from .scenes import Scenes, get_scenes
@@ -325,7 +325,12 @@ class Router:
             return
 
         if response and response.result:
-            device.device_type_id = int(response.result)
+            raw_val = int(response.result)
+            if raw_val > 255:
+                # Packed bytecode: byte[0]=protocol, byte[1]=DALI type
+                device.device_type_id = (raw_val >> 8) & 0xFF
+            else:
+                device.device_type_id = raw_val
 
     async def _get_groups_minimal(self) -> None:
         """Query groups with only name and members — no scenes or last scene.

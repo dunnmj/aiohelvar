@@ -106,10 +106,18 @@ class Device(Subscribable):
 
     @property
     def is_color(self):
-        """Return True if this is a DALI colour control device (type 8)."""
-        if self.device_type_id is not None:
-            return self.device_type_id == 8
-        return self.protocol == "DALI" and self.type == "Colour control"
+        """Return True if this is a DALI colour control device (type 8).
+
+        Checks both the device_type_id (from QUERY_DEVICE_TYPE) and the
+        decoded raw type string (from QUERY_DEVICE_TYPES_AND_ADDRESSES).
+        Both are checked because QUERY_DEVICE_TYPE may return a packed
+        bytecode value rather than the bare DALI type number.
+        """
+        if self.device_type_id == 8:
+            return True
+        if self.protocol == "DALI" and self.type == "Colour control":
+            return True
+        return False
 
     async def _set_level(self, level: float):
         if not self.is_load:
@@ -428,7 +436,12 @@ class Devices:
             )
             if response and response.result is not None:
                 try:
-                    device.device_type_id = int(response.result)
+                    raw_val = int(response.result)
+                    if raw_val > 255:
+                        # Packed bytecode: byte[0]=protocol, byte[1]=type
+                        device.device_type_id = (raw_val >> 8) & 0xFF
+                    else:
+                        device.device_type_id = raw_val
                 except (ValueError, TypeError):
                     _LOGGER.warning(
                         "Could not parse device type for %s: %s",
