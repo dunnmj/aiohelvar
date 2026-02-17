@@ -295,17 +295,32 @@ async def get_groups(router):
             )
         )
 
+        if response.command_message_type == MessageType.ERROR:
+            # Expected when scenes are unnamed — cmd 166 returns nothing.
+            _LOGGER.debug(
+                "No last scene for group %s (scenes may be unnamed)", group_id
+            )
+            return
+
         if response.command_message_type != MessageType.REPLY:
-            if response.command_message_type != MessageType.ERROR:
-                _LOGGER.error(f"Error reply to command: {response}")
-                return
-            _LOGGER.error(f"Unexpected reply to command: {response}")
+            _LOGGER.warning(
+                "Unexpected response type for QUERY_LAST_SCENE_IN_GROUP group %s: %s",
+                group_id,
+                response,
+            )
+            return
 
         try:
             block_scene = int(response.result)
         except (ValueError, TypeError):
-            _LOGGER.error(f"Invalid block_scene value: {response.result}")
+            # result is None or empty string — scenes unnamed, nothing to do.
+            _LOGGER.debug(
+                "No last scene result for group %s (result: %r); scenes may be unnamed",
+                group_id,
+                response.result,
+            )
             return
+
         scene_address = SceneAddress(
             group_id, *blockscene_to_block_and_scene(block_scene)
         )
@@ -326,8 +341,13 @@ async def get_groups(router):
             group_id = group_id.strip()
             if group_id:  # Skip empty strings
                 try:
-                    # Validate that group_id is numeric
-                    int(group_id)
+                    gid_int = int(group_id)
+                    if gid_int < 0 or gid_int > 65535:
+                        _LOGGER.warning(
+                            "Ignoring out-of-range group ID %d (must be 0–65535)",
+                            gid_int,
+                        )
+                        continue
                     groups.append(Group(group_id))
                 except ValueError:
                     _LOGGER.warning(f"Invalid group ID: {group_id}")

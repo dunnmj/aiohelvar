@@ -90,10 +90,21 @@ async def get_scenes(router, groups):
     response = await router._send_command_task(Command(CommandType.QUERY_SCENE_NAMES))
 
     for group in groups.groups.values():
+        try:
+            group_id_int = int(group.group_id)
+        except (ValueError, TypeError):
+            _LOGGER.warning("Skipping scenes for group with non-integer ID: %r", group.group_id)
+            continue
+        if group_id_int < 0 or group_id_int > 65535:
+            _LOGGER.warning(
+                "Skipping scenes for group with out-of-range ID %d (must be 0–65535)",
+                group_id_int,
+            )
+            continue
         for block in range(1, 9):  # Helvar supports blocks 1-8
             for scene_num in range(1, 17):
                 scene = Scene(
-                    SceneAddress(int(group.group_id), int(block), int(scene_num))
+                    SceneAddress(group_id_int, int(block), int(scene_num))
                 )
                 router.scenes.register_scene(scene.address, scene)
 

@@ -28,6 +28,20 @@ def d_2_h(d):
     return [hex(d >> shift & 0xFF) for shift in [0, 8, 16, 24]]
 
 
+# DALI device type IDs (byte[1] of the packed raw type) that represent
+# addressable light loads recognised by the HA integration.
+DALI_LIGHT_TYPE_IDS: frozenset[int] = frozenset({4, 6, 7, 8})
+
+# String types from DALI_TYPES corresponding to DALI_LIGHT_TYPE_IDS,
+# used as a fallback when device_type_id has not yet been queried.
+_DALI_LIGHT_TYPE_STRINGS: frozenset[str] = frozenset({
+    "Low voltage halogen lamps",
+    "LED modules",
+    "Switching function",
+    "Colour control",
+})
+
+
 class Device(Subscribable):
     """
     Represents a Helvar device. These map to sensors, drivers, relays etc.
@@ -88,8 +102,23 @@ class Device(Subscribable):
             self.levels = levels
 
     @property
-    def is_light(self):
+    def is_light(self) -> bool:
+        """Return True only for DALI device types that map to HA light entities."""
+        if self.protocol == "DALI":
+            if self.device_type_id is not None:
+                return self.device_type_id in DALI_LIGHT_TYPE_IDS
+            # Fallback when device_type_id has not been queried yet
+            return self.type in _DALI_LIGHT_TYPE_STRINGS
         return self.is_load
+
+    @property
+    def is_switch(self) -> bool:
+        """Return True if this is a DALI switching function device (type 7, ON/OFF only)."""
+        if self.device_type_id == 7:
+            return True
+        if self.protocol == "DALI" and self.type == "Switching function":
+            return True
+        return False
 
     @property
     def is_load(self):
@@ -163,7 +192,7 @@ class Device(Subscribable):
         await self.update_subscribers()
 
     def get_level_for_scene(self, scene_address: SceneAddress):
-        if self.levels is None or not self.is_load:
+        if not self.levels or not self.is_load:
             return None
 
         try:
