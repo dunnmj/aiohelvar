@@ -71,10 +71,7 @@ class Command:
 
     @property
     def type_parameters_address(self):
-
-        # return (self.command_type, self.command_parameters, self.command_address)
-
-        parameters = []
+        parameters = list(self.command_parameters)
         if self.command_address is not None:
             parameters.append(self.command_address)
 
